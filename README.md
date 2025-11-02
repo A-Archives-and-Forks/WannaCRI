@@ -5,6 +5,19 @@ WannaCRI
 A (WIP) Python library for parsing, extracting, and generating Criware's various audio and video file formats.
 If you're interested in reading more about USM, you can read my write-up about it [here](https://listed.to/@donmai/24921/criware-s-usm-format-part-1)
 
+Install
+=======
+
+Install it conventionally using 
+
+`pip install WannaCRI`
+
+I recommend using [uv](https://docs.astral.sh/uv/#installation) to download and install WannaCRI. After installing uv, you can just run 
+
+`uvx wannacri extractusm /path/to/usm/file/or/folder`
+
+Which will download and run the latest WannaCRI for you.
+
 Support
 =======
 This currently supports the following formats with more planned:

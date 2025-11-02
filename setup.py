@@ -30,5 +30,5 @@ setup(
     python_requires="~=3.8",
     use_scm_version=True,
     setup_requires=["setuptools_scm"],
-    install_requires=["ffmpeg-python~=0.2.0"],
+    install_requires=["ffmpeg-python~=0.2.0", "python-json-logger~=2.0.2"],
 )
