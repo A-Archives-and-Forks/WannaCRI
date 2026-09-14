@@ -1,4 +1,4 @@
-from typing import Optional, Generator, Tuple, List, Protocol
+from typing import Optional, Generator, Tuple, List, Protocol, Callable
 
 from wannacri.usm.types import ChunkType, PayloadType, OpMode
 from wannacri.usm.page import UsmPage, ElementType
@@ -105,7 +105,9 @@ class UsmVideo(UsmMedia, Protocol):
 
     # Classes that explicitly inherit UsmVideo should have this attribute
     # to use the default stream and chunks methods.
-    _stream: Generator[Tuple[bytes, bool], None, None]
+    # _stream_factory should be a callable that returns a fresh generator
+    # each time it's called, allowing streams to be replayed.
+    _stream_factory: Callable[[], Generator[Tuple[bytes, bool], None, None]]
     is_alpha: bool
 
     def stream(
@@ -131,7 +133,8 @@ class UsmVideo(UsmMedia, Protocol):
         if mode is not OpMode.NONE and key is None:
             raise ValueError("No keys given for encrypt or decrypt mode.")
 
-        for packet, is_keyframe in self._stream:
+        # Call factory to get a fresh generator each time
+        for packet, is_keyframe in self._stream_factory():
             if mode is OpMode.NONE:
                 payload = packet
             elif mode is OpMode.ENCRYPT:
@@ -234,7 +237,9 @@ class UsmAudio(UsmMedia, Protocol):
 
     # Classes that explicitly inherit UsmAudio should have this attribute
     # to use the default stream and chunks methods.
-    _stream: Generator[bytes, None, None]
+    # _stream_factory should be a callable that returns a fresh generator
+    # each time it's called, allowing streams to be replayed.
+    _stream_factory: Callable[[], Generator[bytes, None, None]]
 
     def stream(
         self, mode: OpMode = OpMode.NONE, key: Optional[bytes] = None
@@ -258,7 +263,8 @@ class UsmAudio(UsmMedia, Protocol):
         if mode is not OpMode.NONE and key is None:
             raise RuntimeError("No keys given for encrypt or decrypt mode.")
 
-        for packet in self._stream:
+        # Call factory to get a fresh generator each time
+        for packet in self._stream_factory():
             if mode is OpMode.NONE:
                 payload = packet
             elif mode is OpMode.ENCRYPT:

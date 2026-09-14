@@ -1,6 +1,6 @@
 import os.path
 import typing
-from typing import Generator, Optional, List, Any
+from typing import Generator, Optional, List, Callable
 import struct
 from .protocols import UsmAudio
 from ..page import UsmPage
@@ -17,14 +17,14 @@ class GenericAudio(UsmAudio):
 
     def __init__(
         self,
-        stream: Generator[bytes, None, None],
-        crid_page: UsmPage,
-        header_page: UsmPage,
-        length: int,
+        stream_factory: Callable[[], Generator[bytes, None, None]],
+        crid_page: Optional[UsmPage] = None,
+        header_page: Optional[UsmPage] = None,
+        length: int = 0,
         channel_number: int = 0,
         metadata_pages: Optional[List[UsmPage]] = None,
     ):
-        self._stream = stream
+        self._stream_factory = stream_factory
         self._crid_page = crid_page
         self._header_page = header_page
         self._length = length
@@ -65,16 +65,31 @@ class HCA(UsmAudio):
             27860,  # I have no idea
         )
 
-        def packet_gen(
-            path: str
-        ) -> Generator[typing.Tuple[bytes, bool], None, None]:
-            video = open(path, "rb")
-            yield video.read(96)
-            for i in range(metadata["FormatHeader"]["FrameCount"][0]):
-                yield video.read(metadata["CompHeader"]["FrameSize"][0])
-            video.close()
+        # Store filepath and metadata for replayable streams
+        self._filepath = filepath
+        self._frame_count = metadata["FormatHeader"]["FrameCount"][0]
+        self._frame_size = metadata["CompHeader"]["FrameSize"][0]
 
-        self._stream = packet_gen(filepath)
+        # Create a factory function that can be called multiple times
+        # to generate fresh streams. Factories must be side-effect free
+        # and reopen their sources each time.
+        def make_stream_factory(
+            path: str, frame_count: int, frame_size: int
+        ) -> Callable[[], Generator[bytes, None, None]]:
+            def stream_factory() -> Generator[bytes, None, None]:
+                """Factory that returns a fresh generator each time it's called.
+                Opens the file on demand and iterates frames using cached descriptors."""
+                audio_file = open(path, "rb")
+                try:
+                    yield audio_file.read(96)  # Header
+                    for i in range(frame_count):
+                        yield audio_file.read(frame_size)
+                finally:
+                    audio_file.close()
+
+            return stream_factory
+
+        self._stream_factory = make_stream_factory(filepath, self._frame_count, self._frame_size)
         self._length = metadata["FormatHeader"]["FrameCount"][0] + 1
         self._channel_number = metadata["FormatHeader"]["ChannelCount"][0]
         self._metadata_pages = None

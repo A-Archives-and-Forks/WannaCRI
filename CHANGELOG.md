@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Added
+- Implemented page dumping functionality for `extractusm --pages` flag. When enabled, extracts all USM pages (CRID, header, and metadata) to JSON files organized in a `pages/` directory structure with subdirectories for `usm`, `videos`, `audios`, and `alphas`. Each channel gets its own subdirectory containing `crid.json`, `header.json`, and numbered `metadata_*.json` files.
+
+### Fixed
+- Fixed keyframe bookkeeping for VP9/H.264 streams: keyframes now store frame indices instead of DTS timestamps, enabling accurate seeking metadata and correct decryption offsets for encrypted files.
+- Fixed USM muxing to stream chunks directly without buffering the entire multiplexed stream to disk. This eliminates disk duplication for multi-gigabyte movies, reduces I/O, and enables progress reporting during muxing.
+- Fixed `extractusm --pages` flag which previously raised `NotImplementedError`. The flag now properly exports all USM page data to JSON files.
+
+### Changed
+- Refactored media stream handling to use replayable stream factories, allowing streams to be iterated multiple times without buffering.
+
 ## [0.3.1]
 ### Added
 - Support for more ChunkTypes.

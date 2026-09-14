@@ -1,5 +1,5 @@
 import os
-from typing import Generator, Tuple, Optional, List
+from typing import Generator, Tuple, Optional, List, Callable
 
 import ffmpeg
 
@@ -15,15 +15,15 @@ class GenericVideo(UsmVideo):
 
     def __init__(
         self,
-        stream: Generator[Tuple[bytes, bool], None, None],
-        crid_page: UsmPage,
-        header_page: UsmPage,
-        length: int,
+        stream_factory: Callable[[], Generator[Tuple[bytes, bool], None, None]],
+        crid_page: Optional[UsmPage] = None,
+        header_page: Optional[UsmPage] = None,
+        length: int = 0,
         channel_number: int = 0,
         metadata_pages: Optional[List[UsmPage]] = None,
         is_alpha: bool = False,
     ):
-        self._stream = stream
+        self._stream_factory = stream_factory
         self._crid_page = crid_page
         self._header_page = header_page
         self._length = length
@@ -65,7 +65,8 @@ class Vp9(UsmVideo):
         )
 
         frames = info.get("packets")
-        keyframes = [kf.get("dts") for kf in frames if "K" in kf.get("flags")]
+        # Store frame indices instead of DTS timestamps for keyframe tracking
+        keyframe_indices = [i for i, frame in enumerate(frames) if "K" in frame.get("flags")]
         max_size = 0
         sizes = []
         for i, frame in enumerate(frames):
@@ -94,7 +95,7 @@ class Vp9(UsmVideo):
 
         self._header_page = create_video_header_page(
             num_frames=len(frames),
-            num_keyframes=len(keyframes),
+            num_keyframes=len(keyframe_indices),
             framerate=framerate,
             max_packed_size=max_packed_size,
             mpeg_codec=9,  # Value for VP9 USMs
@@ -102,17 +103,33 @@ class Vp9(UsmVideo):
             ffprobe_video_stream=video_stream,
         )
 
-        def packet_gen(
-            path: str, packet_sizes: List[int], keyframe_indexes: List[int]
-        ) -> Generator[Tuple[bytes, bool], None, None]:
-            video = open(path, "rb")
-            for index, size in enumerate(packet_sizes):
-                is_keyframe = index in keyframe_indexes
-                yield video.read(size), is_keyframe
+        # Store filepath and metadata for replayable streams
+        self._filepath = filepath
+        self._packet_sizes = sizes
+        self._keyframe_indices = keyframe_indices
 
-            video.close()
+        # Create a factory function that can be called multiple times
+        # to generate fresh streams. Factories must be side-effect free
+        # and reopen their sources each time.
+        def make_stream_factory(
+            path: str, packet_sizes: List[int], keyframe_indices: List[int]
+        ) -> Callable[[], Generator[Tuple[bytes, bool], None, None]]:
+            keyframe_set = set(keyframe_indices)  # Precompute set for O(1) lookup
 
-        self._stream = packet_gen(filepath, sizes, keyframes)
+            def stream_factory() -> Generator[Tuple[bytes, bool], None, None]:
+                """Factory that returns a fresh generator each time it's called.
+                Opens the file on demand and iterates frames using cached descriptors."""
+                video = open(path, "rb")
+                try:
+                    for index, size in enumerate(packet_sizes):
+                        is_keyframe = index in keyframe_set
+                        yield video.read(size), is_keyframe
+                finally:
+                    video.close()
+
+            return stream_factory
+
+        self._stream_factory = make_stream_factory(filepath, sizes, keyframe_indices)
         self._length = len(frames)
         self._channel_number = channel_number
         self._metadata_pages = None
@@ -150,7 +167,8 @@ class H264(UsmVideo):
         )
 
         frames = info.get("packets")
-        keyframes = [kf.get("dts") for kf in frames if "K" in kf.get("flags")]
+        # Store frame indices instead of DTS timestamps for keyframe tracking
+        keyframe_indices = [i for i, frame in enumerate(frames) if "K" in frame.get("flags")]
         max_size = 0
         sizes = []
         for i, frame in enumerate(frames):
@@ -179,7 +197,7 @@ class H264(UsmVideo):
 
         self._header_page = create_video_header_page(
             num_frames=len(frames),
-            num_keyframes=len(keyframes),
+            num_keyframes=len(keyframe_indices),
             framerate=framerate,
             max_packed_size=max_packed_size,
             mpeg_codec=5,  # Value for H.264 USMs
@@ -187,17 +205,33 @@ class H264(UsmVideo):
             ffprobe_video_stream=video_stream,
         )
 
-        def packet_gen(
-            path: str, packet_sizes: List[int], keyframe_indexes: List[int]
-        ) -> Generator[Tuple[bytes, bool], None, None]:
-            video = open(path, "rb")
-            for index, size in enumerate(packet_sizes):
-                is_keyframe = index in keyframe_indexes
-                yield video.read(size), is_keyframe
+        # Store filepath and metadata for replayable streams
+        self._filepath = filepath
+        self._packet_sizes = sizes
+        self._keyframe_indices = keyframe_indices
 
-            video.close()
+        # Create a factory function that can be called multiple times
+        # to generate fresh streams. Factories must be side-effect free
+        # and reopen their sources each time.
+        def make_stream_factory(
+            path: str, packet_sizes: List[int], keyframe_indices: List[int]
+        ) -> Callable[[], Generator[Tuple[bytes, bool], None, None]]:
+            keyframe_set = set(keyframe_indices)  # Precompute set for O(1) lookup
 
-        self._stream = packet_gen(filepath, sizes, keyframes)
+            def stream_factory() -> Generator[Tuple[bytes, bool], None, None]:
+                """Factory that returns a fresh generator each time it's called.
+                Opens the file on demand and iterates frames using cached descriptors."""
+                video = open(path, "rb")
+                try:
+                    for index, size in enumerate(packet_sizes):
+                        is_keyframe = index in keyframe_set
+                        yield video.read(size), is_keyframe
+                finally:
+                    video.close()
+
+            return stream_factory
+
+        self._stream_factory = make_stream_factory(filepath, sizes, keyframe_indices)
         self._length = len(frames)
         self._channel_number = channel_number
         self._metadata_pages = None

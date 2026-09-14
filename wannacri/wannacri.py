@@ -3,14 +3,15 @@ import os
 import argparse
 import pathlib
 import platform
-import shutil
 import string
 import tempfile
 import random
 from typing import List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import ffmpeg
 from pythonjsonlogger import jsonlogger
+from tqdm import tqdm
 
 import wannacri
 from .codec import Sofdec2Codec
@@ -80,10 +81,21 @@ def create_usm():
     if args.input_audio:
         audios = [HCA(args.input_audio)]
 
-    filename = os.path.splitext(args.input)[0]
+    # Resolve output directory
+    if args.output is None:
+        output_dir = pathlib.Path(args.input).parent.resolve()
+    else:
+        output_dir = pathlib.Path(args.output).resolve()
+
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Construct output filename
+    input_filename = pathlib.Path(args.input).stem
+    output_path = output_dir / f"{input_filename}.usm"
 
     usm = Usm(videos=[video], audios=audios, key=args.key)
-    with open(filename + ".usm", "wb") as f:
+    with open(output_path, "wb") as f:
         mode = OpMode.NONE if args.key is None else OpMode.ENCRYPT
 
         for packet in usm.stream(mode, encoding=args.encoding):
@@ -134,28 +146,34 @@ def extract_usm():
         default="./output",
         help="Output path. Defaults to a folder named output in CWD.",
     )
+    parser.add_argument(
+        "-w",
+        "--workers",
+        type=int,
+        default=os.cpu_count(),
+        help="Number of worker threads. Defaults to CPU count.",
+    )
     args = parser.parse_args()
 
     usmfiles = find_usm(args.input)
 
-    for i, usmfile in enumerate(usmfiles):
-        filename = os.path.basename(usmfile)
-        print(f"Processing {i+1} of {len(usmfiles)}... ", end="", flush=True)
-        try:
-            usm = Usm.open(usmfile, encoding=args.encoding, key=args.key)
+    if len(usmfiles) == 0:
+        return
 
-            usm.demux(
-                path=args.output,
-                save_video=True,
-                save_audio=True,
-                save_pages=args.pages,
-                folder_name=filename,
-            )
-        except ValueError:
-            print("ERROR")
-            print(f"Please run probe on {usmfile}")
-        else:
-            print("DONE")
+    with ThreadPoolExecutor(max_workers=args.workers) as executor, tqdm(
+        total=len(usmfiles), desc="Extracting", unit="file", dynamic_ncols=True
+    ) as pbar:
+        futures = {
+            executor.submit(extract_one, usmfile, args): usmfile
+            for usmfile in usmfiles
+        }
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except ValueError:
+                tqdm.write(f"ERROR: Please run probe on {futures[future]}")
+            finally:
+                pbar.update(1)
 
 
 def probe_usm():
@@ -195,125 +213,45 @@ def probe_usm():
         default=".",
         help="Path to ffprobe executable or directory. Defaults to CWD.",
     )
+    parser.add_argument(
+        "-w",
+        "--workers",
+        type=int,
+        default=os.cpu_count(),
+        help="Number of worker threads. Defaults to CPU count.",
+    )
     args = parser.parse_args()
 
     usmfiles = find_usm(args.input)
 
+    if len(usmfiles) == 0:
+        return
+
     os.makedirs(args.output, exist_ok=True)
-    temp_dir = tempfile.mkdtemp()
     ffprobe_path = find_ffprobe(args.ffprobe)
 
-    logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)
+    with ThreadPoolExecutor(max_workers=args.workers) as executor, tqdm(
+        total=len(usmfiles), desc="Probing", unit="file", dynamic_ncols=True
+    ) as pbar:
+        futures = {
+            executor.submit(
+                probe_one,
+                usmfile,
+                args.encoding,
+                args.output,
+                args.input,
+                ffprobe_path,
+            ): usmfile
+            for usmfile in usmfiles
+        }
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                tqdm.write(f"ERROR processing {futures[future]}: {e}")
+            finally:
+                pbar.update(1)
 
-    keys = [
-        "levelname",
-        "asctime",
-        "module",
-        "funcName",
-        "lineno",
-        "message",
-    ]
-    format_str = " ".join(["%({0:s})s".format(key) for key in keys])
-    for i, usmfile in enumerate(usmfiles):
-        print(f"Processing {i + 1} of {len(usmfiles)}")
-
-        filename = os.path.basename(usmfile)
-        random_str = "".join(random.choices(string.ascii_letters + string.digits, k=3))
-        logname = os.path.join(args.output, f"{filename}_{random_str}.log")
-
-        # Initialize logger
-        file_handler = logging.FileHandler(logname, "w", encoding="UTF-8")
-        file_handler.setFormatter(jsonlogger.JsonFormatter(format_str))
-
-        [logger.removeHandler(handler) for handler in logger.handlers.copy()]
-        logger.addHandler(file_handler)
-
-        # Start logging
-        logging.info(
-            "Info",
-            extra={
-                "path": usmfile.replace(args.input, ""),
-                "version": wannacri.__version__,
-                "os": f"{platform.system()} {platform.release()}",
-                "is_local_ffprobe": ffprobe_path is not None,
-            },
-        )
-
-        try:
-            usm = Usm.open(usmfile, encoding=args.encoding)
-        except ValueError:
-            logging.exception("Error occurred in parsing usm file")
-            continue
-
-        logging.info("Extracting files")
-        try:
-            videos, audios = usm.demux(
-                path=temp_dir, save_video=True, save_audio=True, save_pages=False
-            )
-        except ValueError:
-            logging.exception("Error occurred in demuxing usm file")
-            continue
-
-        logging.info("Probing videos")
-        try:
-            for video in videos:
-                info = ffmpeg.probe(
-                    video,
-                    show_entries="packet=dts,pts_time,pos,flags",
-                    cmd="ffprobe" if ffprobe_path is None else ffprobe_path,
-                )
-                logging.info(
-                    "Video info",
-                    extra={
-                        "path": video,
-                        "format": info.get("format"),
-                        "streams": info.get("streams"),
-                        "packets": info.get("packets"),
-                    },
-                )
-        except (ValueError, RuntimeError):
-            logging.exception("Program error occurred in ffmpeg probe in videos")
-            continue
-        except ffmpeg.Error as e:
-            logging.exception(
-                "FFmpeg error occurred in ffmpeg probe in videos.",
-                extra={"stderr": e.stderr},
-            )
-            continue
-
-        logging.info("Probing audios")
-        try:
-            for audio in audios:
-                info = ffmpeg.probe(
-                    audio,
-                    show_entries="packet=dts,pts_time,pos,flags",
-                    cmd="ffprobe" if ffprobe_path is None else ffprobe_path,
-                )
-                logging.info(
-                    "Audio info",
-                    extra={
-                        "path": audio,
-                        "format": info.get("format"),
-                        "streams": info.get("streams"),
-                        "packets": info.get("packets"),
-                    },
-                )
-        except (ValueError, RuntimeError):
-            logging.exception("Program error occurred in ffmpeg probe in audios")
-            continue
-        except ffmpeg.Error as e:
-            logging.exception(
-                "FFmpeg error occurred in ffmpeg probe in audios.",
-                extra={"stderr": e.stderr},
-            )
-            continue
-
-        logging.info("Done probing usm file")
-        for filename in os.listdir(temp_dir):
-            shutil.rmtree(os.path.join(temp_dir, filename))
-
-    shutil.rmtree(temp_dir)
     print(f'Probe complete. All logs are stored in "{args.output}" folder')
 
 
@@ -349,18 +287,179 @@ def encrypt_usm():
         default=None,
         help="Output path. Defaults to the same place as input.",
     )
+    parser.add_argument(
+        "-w",
+        "--workers",
+        type=int,
+        default=os.cpu_count(),
+        help="Number of worker threads. Defaults to CPU count.",
+    )
     args = parser.parse_args()
 
-    outdir = dir_or_parent_dir(args.input) if args.output is None else pathlib.Path(args.output)
+    # Normalize output directory
+    if args.output is None:
+        outdir = dir_or_parent_dir(args.input)
+    else:
+        outdir = pathlib.Path(args.output).resolve()
+
+    # Ensure output directory exists
+    outdir.mkdir(parents=True, exist_ok=True)
+
     usmfiles = find_usm(args.input)
 
-    for filepath in usmfiles:
-        filename = pathlib.PurePath(filepath).name
-        usm = Usm.open(filepath)
-        usm.video_key, usm.audio_key = generate_keys(args.key)
-        with open(outdir.joinpath(filename), "wb") as out:
-            for packet in usm.stream(OpMode.ENCRYPT, encoding=args.encoding):
-                out.write(packet)
+    if len(usmfiles) == 0:
+        return
+
+    with ThreadPoolExecutor(max_workers=args.workers) as executor, tqdm(
+        total=len(usmfiles), desc="Encrypting", unit="file", dynamic_ncols=True
+    ) as pbar:
+        futures = {
+            executor.submit(encrypt_one, filepath, outdir, args.key, args.encoding): filepath
+            for filepath in usmfiles
+        }
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                tqdm.write(f"ERROR processing {futures[future]}: {e}")
+            finally:
+                pbar.update(1)
+
+
+def extract_one(usmfile: str, args) -> None:
+    filename = os.path.basename(usmfile)
+    usm = Usm.open(usmfile, encoding=args.encoding, key=args.key)
+    usm.demux(
+        path=args.output,
+        save_video=True,
+        save_audio=True,
+        save_pages=args.pages,
+        folder_name=filename,
+    )
+
+
+def probe_one(
+    usmfile: str,
+    encoding: str,
+    out_dir: str,
+    input_path: str,
+    ffprobe_path: Optional[str],
+) -> None:
+    filename = os.path.basename(usmfile)
+    random_str = "".join(random.choices(string.ascii_letters + string.digits, k=3))
+    logname = os.path.join(out_dir, f"{filename}_{random_str}.log")
+
+    # Create per-file logger to avoid handler conflicts
+    logger = logging.Logger(f"probe_{filename}_{random_str}")
+    logger.setLevel(logging.DEBUG)
+
+    keys = [
+        "levelname",
+        "asctime",
+        "module",
+        "funcName",
+        "lineno",
+        "message",
+    ]
+    format_str = " ".join(["%({0:s})s".format(key) for key in keys])
+    file_handler = logging.FileHandler(logname, "w", encoding="UTF-8")
+    file_handler.setFormatter(jsonlogger.JsonFormatter(format_str))
+    logger.addHandler(file_handler)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        logger.info(
+            "Info",
+            extra={
+                "path": usmfile.replace(input_path, ""),
+                "version": wannacri.__version__,
+                "os": f"{platform.system()} {platform.release()}",
+                "is_local_ffprobe": ffprobe_path is not None,
+            },
+        )
+
+        try:
+            usm = Usm.open(usmfile, encoding=encoding)
+        except ValueError:
+            logger.exception("Error occurred in parsing usm file")
+            return
+
+        logger.info("Extracting files")
+        try:
+            videos, audios = usm.demux(
+                path=temp_dir, save_video=True, save_audio=True, save_pages=False
+            )
+        except ValueError:
+            logger.exception("Error occurred in demuxing usm file")
+            return
+
+        logger.info("Probing videos")
+        try:
+            for video in videos:
+                info = ffmpeg.probe(
+                    video,
+                    show_entries="packet=dts,pts_time,pos,flags",
+                    cmd="ffprobe" if ffprobe_path is None else ffprobe_path,
+                )
+                logger.info(
+                    "Video info",
+                    extra={
+                        "path": video,
+                        "format": info.get("format"),
+                        "streams": info.get("streams"),
+                        "packets": info.get("packets"),
+                    },
+                )
+        except (ValueError, RuntimeError):
+            logger.exception("Program error occurred in ffmpeg probe in videos")
+            return
+        except ffmpeg.Error as e:
+            logger.exception(
+                "FFmpeg error occurred in ffmpeg probe in videos.",
+                extra={"stderr": e.stderr},
+            )
+            return
+
+        logger.info("Probing audios")
+        try:
+            for audio in audios:
+                info = ffmpeg.probe(
+                    audio,
+                    show_entries="packet=dts,pts_time,pos,flags",
+                    cmd="ffprobe" if ffprobe_path is None else ffprobe_path,
+                )
+                logger.info(
+                    "Audio info",
+                    extra={
+                        "path": audio,
+                        "format": info.get("format"),
+                        "streams": info.get("streams"),
+                        "packets": info.get("packets"),
+                    },
+                )
+        except (ValueError, RuntimeError):
+            logger.exception("Program error occurred in ffmpeg probe in audios")
+            return
+        except ffmpeg.Error as e:
+            logger.exception(
+                "FFmpeg error occurred in ffmpeg probe in audios.",
+                extra={"stderr": e.stderr},
+            )
+            return
+
+        logger.info("Done probing usm file")
+
+
+def encrypt_one(
+    filepath: str, outdir: pathlib.Path, enc_key: int, encoding: str
+) -> None:
+    filename = pathlib.PurePath(filepath).name
+    usm = Usm.open(filepath)
+    usm.video_key, usm.audio_key = generate_keys(enc_key)
+    # Ensure output directory exists before writing
+    outdir.mkdir(parents=True, exist_ok=True)
+    with open(outdir.joinpath(filename), "wb") as out:
+        for packet in usm.stream(OpMode.ENCRYPT, encoding=encoding):
+            out.write(packet)
 
 
 OP_DICT = {"extractusm": extract_usm, "createusm": create_usm, "probeusm": probe_usm, "encryptusm": encrypt_usm}
@@ -457,6 +556,6 @@ def dir_path(path) -> str:
 def dir_or_parent_dir(path) -> pathlib.Path:
     path = pathlib.Path(path)
     if path.is_dir():
-        return path.parent.resolve()
+        return path.resolve()
 
-    return path
+    return path.parent.resolve()
