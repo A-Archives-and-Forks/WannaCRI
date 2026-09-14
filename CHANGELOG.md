@@ -4,17 +4,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.3] - 2026-09-15
+### Fixed
+- Fixed USM filename metadata handling.
+- Fixed CRID format version handling when creating USMs.
+
+## [0.3.2] - 2026-09-15
 ### Added
-- Implemented page dumping functionality for `extractusm --pages` flag. When enabled, extracts all USM pages (CRID, header, and metadata) to JSON files organized in a `pages/` directory structure with subdirectories for `usm`, `videos`, `audios`, and `alphas`. Each channel gets its own subdirectory containing `crid.json`, `header.json`, and numbered `metadata_*.json` files.
+- Added page dumping with `extractusm --pages`.
 
 ### Fixed
-- Fixed keyframe bookkeeping for VP9/H.264 streams: keyframes now store frame indices instead of DTS timestamps, enabling accurate seeking metadata and correct decryption offsets for encrypted files.
-- Fixed USM muxing to stream chunks directly without buffering the entire multiplexed stream to disk. This eliminates disk duplication for multi-gigabyte movies, reduces I/O, and enables progress reporting during muxing.
-- Fixed `extractusm --pages` flag which previously raised `NotImplementedError`. The flag now properly exports all USM page data to JSON files.
+- Fixed VP9/H.264 keyframe bookkeeping.
+- Fixed USM muxing to avoid temporary stream buffering.
 
 ### Changed
-- Refactored media stream handling to use replayable stream factories, allowing streams to be iterated multiple times without buffering.
+- Made media streams replayable.
+- Added parallel processing and progress reporting to batch CLI operations.
 
 ## [0.3.1]
 ### Added
@@ -82,7 +87,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed bug in extractusm that causes it to fail when output directory doesn't exist.
 - Fixed bug where program fails when directory exists.
 
-[Unreleased]: https://github.com/donmai-me/WannaCRI/compare/0.3.0...HEAD
+[Unreleased]: https://github.com/donmai-me/WannaCRI/compare/0.3.3...HEAD
+[0.3.3]: https://github.com/donmai-me/WannaCRI/compare/0.3.2...0.3.3
+[0.3.2]: https://github.com/donmai-me/WannaCRI/compare/0.3.1...0.3.2
+[0.3.1]: https://github.com/donmai-me/WannaCRI/compare/0.3.0...0.3.1
 [0.3.0]: https://github.com/donmai-me/WannaCRI/compare/0.2.5...0.3.0
 [0.2.5]: https://github.com/donmai-me/WannaCRI/compare/0.2.4...0.2.5
 [0.2.4]: https://github.com/donmai-me/WannaCRI/compare/0.2.3...0.2.4

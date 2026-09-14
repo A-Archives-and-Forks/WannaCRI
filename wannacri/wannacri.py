@@ -94,7 +94,16 @@ def create_usm():
     input_filename = pathlib.Path(args.input).stem
     output_path = output_dir / f"{input_filename}.usm"
 
-    usm = Usm(videos=[video], audios=audios, key=args.key)
+    video_fmtver = video.crid_page.get("fmtver")
+    if video_fmtver is None or not isinstance(video_fmtver.val, int):
+        raise ValueError("Video format version not found.")
+
+    usm = Usm(
+        videos=[video],
+        audios=audios,
+        key=args.key,
+        version=video_fmtver.val,
+    )
     with open(output_path, "wb") as f:
         mode = OpMode.NONE if args.key is None else OpMode.ENCRYPT
 
